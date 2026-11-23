@@ -1,6 +1,69 @@
-# REDLINE AGENT — 試作 BUILD-NOTES（2026-11-23、v0／v1／v1.1）
+# REDLINE AGENT — 試作 BUILD-NOTES（2026-11-23、v0／v1／v1.1／v1.2）
 
-v1 は 2026-11-23 に別途指示で公開済み。**v1.1 はローカル検証まで（公開は別途）**。
+v1 は 2026-11-23 に別途指示で公開済み。**v1.1・v1.2 はローカル検証まで（公開は別途）**。
+
+---
+
+## v1.2 (2026-11-23) — collision / walk cycle / car variety / rockets / lane rules
+
+Built locally, verified, **not published** (publishing is a separate step). Version label: "REDLINE AGENT prototype v1.2".
+
+### Fix 1 — never sink into objects (collision)
+- Root cause of the v1.1 bug (Rei inside a car, only head/feet visible): the cover spot was computed as `obj.z − 1.8`, but a regular car's half-depth is 2.15 m — the "cover position" was *inside* the car body.
+- Every solid object now has an oriented footprint `{cx, cz, hx, hz, rot}` (cars and street trees; trees are circles approximated by a 0.35 m square). Collision uses an OBB test in the object's local frame. The player (radius 0.25 m) is pushed out along the least-penetration axis after **every** movement integration: walk, dash, backstep, lane retreat, cover transit and centre drift all pass through the same resolver. Street clamp |x| ≤ 5.55 also applies.
+- Cover spots are derived from the footprint: spot = centre − (local z extent + player radius + 0.18 m) on the player's side, so the sprite is always fully outside the mesh and occluded from the enemy side.
+- Cover entry / cover-to-cover transit uses a path: out to a clear corridor (|x| = 1.6, inside every footprint's inner edge), along the street, then into the spot — the player never cuts through a car to reach cover.
+
+### Fix 2 — no shrink in cover
+- The cover squash (sprite scale-y ×0.82) is removed. In cover the sprite keeps full height (verified: scale stays at the full 2.05 world height in cover); hiding is expressed by position/occlusion only. The brief shooting lean (scale 1.04 pulse) is unchanged.
+
+### Fix 3 — walk-cycle leg phases (audit of the v2 sheets, top row)
+Every top-row figure of all four v2 sheets was extracted and classified before changing anything:
+
+| Outfit | Back-view figures found | Leg phases available | Cycle used in v1.2 |
+|---|---|---|---|
+| 1 紳士 | standing; contact phase A (cell 2, fig 1); a second figure in cell 2 that is the *same* phase as A (pixel-diff ≈ duplicate); **passing phase** (cell 1, fig 2 — one leg grounded, other raised behind) | standing / contact / passing — **no opposite-leg contact frame exists in the art** | standing → A → standing → passing (both legs appear in turn; honest best with the art that exists) |
+| 2 スーツ | standing only — the two walk cells are **side views** (profile face visible) | none | standing only, no bob (no back-view walk art exists) |
+| 3 迷彩 | standing; stride A (right leg forward); stride B (left leg forward) | full two-phase | standing → A → standing → B (full cycle). Note: in the source art, stride B has **no rifle drawn** — the rifle disappears for that one frame; kept as-is rather than fabricating |
+| 4 狩人 | standing; one stride phase | single phase | standing ↔ step, no bob |
+
+- New frames extracted for v1.2: `o1-walk-c.png` (passing phase), `o3-walk-a.png`, `o3-walk-b.png`, `o4-walk-a.png` (corner-sampled background removal + defringe, same method as the corrected o1-idle). The old `o1-walk-b` (duplicate phase) is retired from the cycle.
+- Cycle timing is distance-based: one full cycle per 2.2 m (step length 0.55 m), so cadence scales with speed (walk ≈ 4 steps/s, dash faster). Backward movement plays the same cycle in reverse order. Vertical bob (0.03) only for outfits with a full two-phase cycle; single/no-phase outfits get no bob so they don't fake a cycle.
+- Outfit-select cards use the same frames as the game; start/clear cut-ins unchanged.
+
+### Car variety
+Types (same multi-part construction: body, cabin/cargo, wheels, head/tail lights; front = +z local, lights rotate with the car):
+- **regular** 4.3 m (as v1.1), **compact** 3.4 m (narrower/lower), **van** 5.6 m (tall box body), **truck** 6.0 m (cab + cargo box).
+- Right column (all cover-capable, 18): z=9 regular, 24.5 compact, 30 regular, 45.5 van, 51 regular, 66.5 **sideways regular (90°)**, 72 compact, 87.5 **diagonal compact (+35°)**, 93 regular, 108.5 **diagonal regular (−40°)**, 114 van, 129.5 truck, 135 regular, 150.5 compact, 156 regular, 171.5 **sideways compact (90°)**, 177 regular, 192.5 truck.
+- Left column: street trees only (as v1.1, all cover-capable).
+- Decorative cars (obstacles, **not** cover): (5.05, 35) regular, (4.6, 141) compact +20°, (−4.95, 98) van, (5.05, 160) regular.
+- Collision and cover spots use each car's real oriented footprint (OBB), so sideways/diagonal cars have correct no-entry zones and cover spots that follow their angle. The centre lane (|x| ≲ 3) is always passable for the full 200 m. Note: the sideways regular (66.5) and diagonal regular (108.5) overhang the road edge (|x| = 6) by ~0.2 m onto the sidewalk — cosmetic only.
+
+### Enemy rockets + car flips
+Chosen values: rockets only from **z ≥ 60 m**, global cooldown **18 s**, rocket speed **14 m/s**, telegraphed by a 0.5 s aim/flash at the firing enemy; HUD warning 「ロケット接近！」 on launch. The rocket flies straight at the player's position at fire time, with a smoke-puff trail and glowing head, and is collision-tested step-by-step against every footprint.
+- **Hits a car** (incl. the player's own cover car, or any car in the path): explosion; the car is launched — impulse up + away from the blast (vy ≈ 10–11.5 m/s), spin on pitch/roll/yaw, gravity 20 m/s², one bounce at 35% energy, then settles **upside-down or upright ≈ 50/50** with a new yaw. Landing spot is searched to stay on the street, out of other footprints, and never on the player. Footprint + cover spot update to the new pose; an upside-down car is still an obstacle and still cover-capable. If it was the player's cover, cover/lane state clears with **no damage**.
+- **Direct hit on an uncovered player**: 1 damage (same as a bullet). **Tree/building/miss**: explosion effect only. Only cars flip.
+- Stage reset restores every car to its original pose.
+
+### Lane rules (edge lanes = cover columns)
+- Three lanes: centre, left edge, right edge. Being in cover (or transiting between covers) puts the player in that side's edge lane; the lane persists after stepping back within it.
+- **Dash is centre-lane only**: ↑↑ in an edge lane is just a normal forward move.
+- In cover, ↑ advances to the **next cover ahead on the same side** and ↓ returns to the **previous** one, staying in cover the whole transit (HUD shows 物陰（左/右）while transiting too). ↓ at the first cover (or ↓ while in a lane but not in cover) steps back within the lane and drops cover state.
+- **Protection**: while in an edge lane (at a cover or in transit), enemies on the **opposite** side cannot hit the player — normal shots are blocked (tracer stops at the cover row), sniper aim is blocked across the street, and opposite-side rockets target the player's cover car instead of the player. Same-side enemies hit normally.
+- Leaving the lane: swipe toward the centre exits to the centre lane (existing behaviour). **Backstep (↓↓) in a lane**: performs the normal ~2 m hop backward, drops cover state, and the player **stays at the lane's x** (lane membership kept; only cover state drops). Documented choice, per spec's request.
+
+### Verification (verify.mjs, headless Chromium)
+**56 checks, all PASS, 0 console/page errors.** Includes everything from v1.1 (31 checks) plus:
+- Systematic collision: the player is driven into **every** cover object from 4 directions (108 drives) — never inside any footprint expanded by the player radius; dash clamps at a car's face (pz = 6.60 exactly); backstep trajectory sampled — never inside; cover snap at a diagonal car lands outside its OBB.
+- Cover sprite height = full size in tree cover and car cover (Fix 2).
+- Lane rules: ↑↑ in a lane does not dash (centre dash still works); ↑/↓ cover-to-cover advance/retreat keep cover state and lane; opposite-side sniper shot blocked (no damage), same-side sniper shot hits.
+- Rockets: forced rocket at the player's cover car → car leaves the ground, flips, settles displaced/rotated with `flipped` recorded, footprint changed, player unharmed; direct rocket hit on an uncovered player deals exactly 1 damage.
+- Walk cycles: sprite sampling while walking forward/backward confirms outfit 1 shows standing + both step figures in both directions, outfit 3 shows both stride phases, outfit 4 alternates standing↔step, outfit 2 stays on idle (honest fallback).
+- Test note: segments that assert no damage run with a verification-only god-mode hook (`RLA.setGod`) because ambient same-side fire during the long teleports/transits otherwise randomly kills the player and cascades; all damage assertions run with it off in fresh page loads.
+- Screenshots: `shots/v1.2-01-cover-car.png` (diagonal-car cover, full height, fully outside), `v1.2-02-car-flip-mid.png` (car airborne mid-flip with explosion), `v1.2-03-car-settled.png`, `v1.2-04-gameplay.png`, `v1.2-05-variety-a.png` (sideways car), `v1.2-06-variety-b.png` (diagonal car + van + truck), `v1.2-walk-strip-o1.png` / `v1.2-walk-strip-o3.png` (extracted cycle frames side by side).
+
+### Still missing / honest gaps
+- Outfit 1 has no opposite-leg *contact* frame in the source art — the passing-phase frame substitutes; outfit 2 has no back-view walk art at all; outfit 4 has a single step phase; outfit 3's stride-B frame lacks the rifle in the original art. All four would need new art from the image AI to fix properly (no mirroring — it would flip the weapon shoulder — and no regeneration, per standing rules).
 
 ---
 
